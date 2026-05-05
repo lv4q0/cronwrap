@@ -2,87 +2,91 @@ package runner
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os/exec"
 	"time"
+
+	"github.com/cronwrap/cronwrap/internal/logger"
 )
 
-// Result holds the outcome of a command execution.
-type Result struct {
-	Command  string
-	ExitCode int
-	Stdout   string
-	Stderr   string
-	Duration time.Duration
-	Err      error
-}
-
-// Options configures how a command is run.
+// Options configures the behaviour of Run.
 type Options struct {
-	Timeout    time.Duration
-	MaxRetries int
+	// MaxAttempts is the total number of times the command will be tried.
+	MaxAttempts int
+	// RetryDelay is the pause between consecutive attempts.
 	RetryDelay time.Duration
+	// Timeout is the maximum duration for a single attempt (0 = no timeout).
+	Timeout time.Duration
+	// Logger receives structured log output. If nil, a default stderr logger is used.
+	Logger *logger.Logger
+	// JobID is an identifier included in log lines.
+	JobID string
 }
 
-// DefaultOptions returns sensible defaults for command execution.
+// DefaultOptions returns sensible defaults: 1 attempt, no retry delay, no timeout.
 func DefaultOptions() Options {
 	return Options{
-		Timeout:    30 * time.Minute,
-		MaxRetries: 0,
-		RetryDelay: 5 * time.Second,
+		MaxAttempts: 1,
+		RetryDelay:  0,
+		Timeout:     0,
 	}
 }
 
-// Run executes the given command with the provided options, retrying on failure
-// up to MaxRetries times. It returns the Result of the last attempt.
-func Run(ctx context.Context, command string, args []string, opts Options) Result {
-	var last Result
-	attempts := opts.MaxRetries + 1
+// Run executes the given command according to opts, retrying on failure.
+// It returns the last error encountered, or nil on success.
+func Run(ctx context.Context, opts Options, name string, args ...string) error {
+	if opts.MaxAttempts < 1 {
+		opts.MaxAttempts = 1
+	}
+	log := opts.Logger
+	if log == nil {
+		jobID := opts.JobID
+		if jobID == "" {
+			jobID = name
+		}
+		log = logger.NewDefault(jobID)
+	}
 
-	for i := 0; i < attempts; i++ {
-		if i > 0 {
+	var lastErr error
+	for attempt := 1; attempt <= opts.MaxAttempts; attempt++ {
+		log.Info("starting attempt", map[string]any{"attempt": attempt, "of": opts.MaxAttempts})
+		lastErr = runOnce(ctx, opts, log, attempt, name, args...)
+		if lastErr == nil {
+			log.Info("command succeeded", map[string]any{"attempt": attempt})
+			return nil
+		}
+		log.Error("attempt failed", map[string]any{"attempt": attempt, "error": lastErr})
+		if attempt < opts.MaxAttempts && opts.RetryDelay > 0 {
+			log.Info("waiting before retry", map[string]any{"delay": opts.RetryDelay})
 			select {
 			case <-time.After(opts.RetryDelay):
 			case <-ctx.Done():
-				last.Err = fmt.Errorf("context cancelled before retry %d: %w", i+1, ctx.Err())
-				return last
+				return ctx.Err()
 			}
 		}
-
-		last = runOnce(ctx, command, args, opts.Timeout)
-		if last.Err == nil && last.ExitCode == 0 {
-			return last
-		}
 	}
-
-	return last
+	return lastErr
 }
 
-func runOnce(ctx context.Context, command string, args []string, timeout time.Duration) Result {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, command, args...)
-
-	var stdoutBuf, stderrBuf strings.Builder
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
-
-	err := cmd.Run()
-	duration := time.Since(start)
-
-	exitCode := 0
-	if cmd.ProcessState != nil {
-		exitCode = cmd.ProcessState.ExitCode()
+// runOnce executes the command once, honouring the per-attempt timeout.
+func runOnce(ctx context.Context, opts Options, log *logger.Logger, attempt int, name string, args ...string) error {
+	runCtx := ctx
+	var cancel context.CancelFunc
+	if opts.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
 	}
 
-	return Result{
-		Command:  command,
-		ExitCode: exitCode,
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-		Duration: duration,
-		Err:      err,
+	cmd := exec.CommandContext(runCtx, name, args...)
+	out, err := cmd.CombinedOutput()
+	if len(out) > 0 {
+		log.Debug("command output", map[string]any{"output": string(out), "attempt": attempt})
 	}
+	if err != nil {
+		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return err
+	}
+	return nil
 }
