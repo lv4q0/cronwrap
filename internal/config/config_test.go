@@ -2,14 +2,13 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
 
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "cronwrap-*.json")
+	f, err := os.CreateTemp(t.TempDir(), "cronwrap-*.yaml")
 	if err != nil {
 		t.Fatalf("create temp file: %v", err)
 	}
@@ -21,49 +20,52 @@ func writeTemp(t *testing.T, content string) string {
 }
 
 func TestLoadFileValid(t *testing.T) {
-	path := writeTemp(t, `{
-		"command": "echo",
-		"args": ["hello"],
-		"timeout": 10000000000,
-		"retries": 2,
-		"retry_delay": 1000000000,
-		"log_level": "debug",
-		"webhook_url": "http://example.com/hook",
-		"job_name": "test-job"
-	}`)
-
+	path := writeTemp(t, `
+command: /usr/bin/backup
+args: ["-v", "--all"]
+schedule: "0 2 * * *"
+timeout: 2m
+retries: 3
+webhook_url: https://hooks.example.com/alert
+log_level: debug
+`)
 	cfg, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Command != "echo" {
-		t.Errorf("command: got %q, want %q", cfg.Command, "echo")
+	if cfg.Command != "/usr/bin/backup" {
+		t.Errorf("Command = %q, want /usr/bin/backup", cfg.Command)
 	}
-	if cfg.Retries != 2 {
-		t.Errorf("retries: got %d, want 2", cfg.Retries)
+	if cfg.Timeout != 2*time.Minute {
+		t.Errorf("Timeout = %v, want 2m", cfg.Timeout)
 	}
-	if cfg.Timeout != 10*time.Second {
-		t.Errorf("timeout: got %v, want 10s", cfg.Timeout)
+	if cfg.Retries != 3 {
+		t.Errorf("Retries = %d, want 3", cfg.Retries)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
 	}
 }
 
 func TestLoadFileDefaults(t *testing.T) {
-	path := writeTemp(t, `{"command": "backup.sh"}`)
-
+	path := writeTemp(t, "command: /bin/true\n")
 	cfg, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.LogLevel != "info" {
-		t.Errorf("log_level default: got %q, want %q", cfg.LogLevel, "info")
-	}
 	if cfg.Timeout != 30*time.Second {
-		t.Errorf("timeout default: got %v, want 30s", cfg.Timeout)
+		t.Errorf("default Timeout = %v, want 30s", cfg.Timeout)
+	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("default LogLevel = %q, want info", cfg.LogLevel)
+	}
+	if cfg.RetryDelay != 5*time.Second {
+		t.Errorf("default RetryDelay = %v, want 5s", cfg.RetryDelay)
 	}
 }
 
 func TestLoadFileMissingCommand(t *testing.T) {
-	path := writeTemp(t, `{"retries": 1}`)
+	path := writeTemp(t, "schedule: \"@hourly\"\n")
 	_, err := LoadFile(path)
 	if err == nil {
 		t.Fatal("expected error for missing command, got nil")
@@ -71,17 +73,16 @@ func TestLoadFileMissingCommand(t *testing.T) {
 }
 
 func TestLoadFileNotFound(t *testing.T) {
-	_, err := LoadFile(filepath.Join(t.TempDir(), "nonexistent.json"))
+	_, err := LoadFile("/nonexistent/path/cronwrap.yaml")
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }
 
-func TestValidateNegativeRetries(t *testing.T) {
-	cfg := defaults()
-	cfg.Command = "echo"
-	cfg.Retries = -1
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected error for negative retries, got nil")
+func TestLoadFileInvalidYAML(t *testing.T) {
+	path := writeTemp(t, "command: [unclosed")
+	_, err := LoadFile(path)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML, got nil")
 	}
 }
