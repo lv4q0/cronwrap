@@ -59,6 +59,28 @@ func (l *Lock) Path() string {
 	return l.path
 }
 
+// Info returns the pid and acquisition time recorded in the lock file.
+// Returns an error if the lock file does not exist or cannot be parsed.
+func (l *Lock) Info() (pid int, acquiredAt time.Time, err error) {
+	data, err := os.ReadFile(l.path)
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("failed to read lock file: %w", err)
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+	if len(parts) < 2 {
+		return 0, time.Time{}, fmt.Errorf("lock file has unexpected format")
+	}
+	pid, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("invalid pid in lock file: %w", err)
+	}
+	acquiredAt, err = time.Parse(time.RFC3339, parts[1])
+	if err != nil {
+		return 0, time.Time{}, fmt.Errorf("invalid timestamp in lock file: %w", err)
+	}
+	return pid, acquiredAt, nil
+}
+
 func sanitize(name string) string {
 	replacer := strings.NewReplacer("/", "_", " ", "_", ":", "_")
 	return replacer.Replace(name)
