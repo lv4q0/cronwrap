@@ -57,6 +57,23 @@ func (l *Limiter) NextAllowed(key string) time.Time {
 	return last.Add(l.interval)
 }
 
+// WaitTime returns the duration the caller must wait before the key is allowed
+// to run again. Returns zero if the key is already permitted to run.
+func (l *Limiter) WaitTime(key string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	last, ok := l.lastRun[key]
+	if !ok {
+		return 0
+	}
+	remaining := time.Until(last.Add(l.interval))
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
 // String returns a human-readable description of the limiter.
 func (l *Limiter) String() string {
 	return fmt.Sprintf("Limiter(interval=%s)", l.interval)
