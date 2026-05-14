@@ -1,22 +1,24 @@
-// Package middleware defines a composable RunFunc pipeline for cronwrap jobs.
+// Package middleware provides composable middleware for wrapping cron job execution.
 //
-// # Overview
+// Each middleware implements a Wrap method that accepts and returns a job function
+// of the form func(ctx context.Context) error. Middlewares can be composed using
+// the Chain helper:
 //
-// Each job is ultimately represented as a RunFunc:
-//
-//	type RunFunc func(ctx context.Context) error
-//
-// A Middleware wraps a RunFunc to add cross-cutting behaviour before or after
-// execution. Multiple middlewares are composed with Chain or Apply:
-//
-//	fn := middleware.Apply(
-//		job.Run,
-//		middleware.RecoverMiddleware(),
-//		timeout.NewGuard(...),
-//		circuit.NewGuard(...),
-//		ratelimit.NewGuard(...),
+//	chain := middleware.Chain(
+//		middleware.RecoverMiddleware,
+//		middleware.LogMiddleware(logger, "my-job"),
+//		middleware.NewMetricsMiddleware(store).Wrap,
+//		middleware.NewNotifyMiddleware(dispatcher, "my-job").Wrap,
 //	)
+//	
+//	if err := middleware.Apply(chain, jobFunc)(ctx); err != nil {
+//		// handle error
+//	}
 //
-// Middlewares are applied outermost-first, matching the order in which they
-// appear in the argument list.
+// Available middleware:
+//
+//   - RecoverMiddleware  – catches panics and converts them to errors
+//   - LogMiddleware      – logs job start, finish, and errors
+//   - MetricsMiddleware  – records success/failure counts and duration
+//   - NotifyMiddleware   – dispatches notification events on completion
 package middleware
