@@ -77,3 +77,23 @@ func TestMetricsMiddlewareRecordsDuration(t *testing.T) {
 		t.Errorf("expected positive total duration, got %v", snap.TotalDuration)
 	}
 }
+
+func TestMetricsMiddlewareAccumulatesMultipleRuns(t *testing.T) {
+	store := newStore()
+	mw := middleware.NewMetricsMiddleware(store, testJob)
+
+	wrapped := mw.Wrap(func() error { return nil })
+	for i := 0; i < 3; i++ {
+		if err := wrapped(); err != nil {
+			t.Fatalf("unexpected error on run %d: %v", i, err)
+		}
+	}
+
+	snap := store.Snapshot(testJob)
+	if snap.Successes != 3 {
+		t.Errorf("expected 3 successes, got %d", snap.Successes)
+	}
+	if snap.Failures != 0 {
+		t.Errorf("expected 0 failures, got %d", snap.Failures)
+	}
+}
