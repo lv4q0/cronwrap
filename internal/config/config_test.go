@@ -1,88 +1,93 @@
-package config
+package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/example/cronwrap/internal/config"
 )
 
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
-	f, err := os.CreateTemp(t.TempDir(), "cronwrap-*.yaml")
+	f, err := os.CreateTemp(t.TempDir(), "*.yaml")
 	if err != nil {
-		t.Fatalf("create temp file: %v", err)
+		t.Fatal(err)
 	}
-	if _, err := f.WriteString(content); err != nil {
-		t.Fatalf("write temp file: %v", err)
-	}
-	f.Close()
+	_, _ = f.WriteString(content)
+	_ = f.Close()
 	return f.Name()
 }
 
 func TestLoadFileValid(t *testing.T) {
 	path := writeTemp(t, `
-command: /usr/bin/backup
-args: ["-v", "--all"]
-schedule: "0 2 * * *"
-timeout: 2m
+command: echo hello
+schedule: "@hourly"
+timeout: 10s
 retries: 3
-webhook_url: https://hooks.example.com/alert
-log_level: debug
+env:
+  FOO: bar
+tags:
+  team: platform
 `)
-	cfg, err := LoadFile(path)
+	cfg, err := config.LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Command != "/usr/bin/backup" {
-		t.Errorf("Command = %q, want /usr/bin/backup", cfg.Command)
+	if cfg.Command != "echo hello" {
+		t.Errorf("command mismatch: %q", cfg.Command)
 	}
-	if cfg.Timeout != 2*time.Minute {
-		t.Errorf("Timeout = %v, want 2m", cfg.Timeout)
+	if cfg.Timeout != 10*time.Second {
+		t.Errorf("timeout mismatch: %v", cfg.Timeout)
 	}
 	if cfg.Retries != 3 {
-		t.Errorf("Retries = %d, want 3", cfg.Retries)
+		t.Errorf("retries mismatch: %d", cfg.Retries)
 	}
-	if cfg.LogLevel != "debug" {
-		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	if cfg.Env["FOO"] != "bar" {
+		t.Errorf("env mismatch: %v", cfg.Env)
+	}
+	if cfg.Tags["team"] != "platform" {
+		t.Errorf("tags mismatch: %v", cfg.Tags)
 	}
 }
 
 func TestLoadFileDefaults(t *testing.T) {
-	path := writeTemp(t, "command: /bin/true\n")
-	cfg, err := LoadFile(path)
+	path := writeTemp(t, "command: ls\n")
+	cfg, err := config.LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.Timeout != 30*time.Second {
-		t.Errorf("default Timeout = %v, want 30s", cfg.Timeout)
+		t.Errorf("expected default timeout 30s, got %v", cfg.Timeout)
 	}
 	if cfg.LogLevel != "info" {
-		t.Errorf("default LogLevel = %q, want info", cfg.LogLevel)
+		t.Errorf("expected default log level info, got %q", cfg.LogLevel)
 	}
-	if cfg.RetryDelay != 5*time.Second {
-		t.Errorf("default RetryDelay = %v, want 5s", cfg.RetryDelay)
+	if cfg.Retries != 0 {
+		t.Errorf("expected default retries 0, got %d", cfg.Retries)
 	}
 }
 
 func TestLoadFileMissingCommand(t *testing.T) {
-	path := writeTemp(t, "schedule: \"@hourly\"\n")
-	_, err := LoadFile(path)
+	path := writeTemp(t, "schedule: \"@daily\"\n")
+	_, err := config.LoadFile(path)
 	if err == nil {
-		t.Fatal("expected error for missing command, got nil")
+		t.Fatal("expected error for missing command")
 	}
 }
 
 func TestLoadFileNotFound(t *testing.T) {
-	_, err := LoadFile("/nonexistent/path/cronwrap.yaml")
+	_, err := config.LoadFile(filepath.Join(t.TempDir(), "missing.yaml"))
 	if err == nil {
-		t.Fatal("expected error for missing file, got nil")
+		t.Fatal("expected error for missing file")
 	}
 }
 
 func TestLoadFileInvalidYAML(t *testing.T) {
-	path := writeTemp(t, "command: [unclosed")
-	_, err := LoadFile(path)
+	path := writeTemp(t, ": : : invalid yaml {{{")
+	_, err := config.LoadFile(path)
 	if err == nil {
-		t.Fatal("expected error for invalid YAML, got nil")
+		t.Fatal("expected parse error")
 	}
 }
