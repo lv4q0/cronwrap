@@ -1,32 +1,18 @@
-// Package middleware provides composable middleware for cronwrap job execution.
+// Package middleware provides composable middleware functions for cron job
+// execution. Each middleware wraps a job function with a specific concern:
 //
-// Middleware wraps a job function of the form:
+//   - Chain / Apply  – compose multiple middlewares in order
+//   - LogMiddleware  – structured start/finish/error logging
+//   - RecoverMiddleware – catch panics and return them as errors
+//   - RetryMiddleware – retry failed jobs with configurable back-off
+//   - TimeoutMiddleware – enforce a per-run deadline
+//   - ConcurrencyMiddleware – cap the number of simultaneous runs
+//   - DedupeMiddleware – prevent overlapping runs via a file lock
+//   - ThrottleMiddleware – rate-limit runs to a minimum interval
+//   - CircuitMiddleware – skip runs when too many recent failures occur
+//   - NewMetricsMiddleware – record success/failure counters and durations
+//   - NewNotifyMiddleware – dispatch notifications on job completion
 //
-//	func(ctx context.Context) error
-//
-// and adds cross-cutting behaviour such as logging, metrics, retry, timeout,
-// panic recovery, notifications, audit logging, concurrency limiting, and
-// deduplication.
-//
-// # Composition
-//
-// Use [Chain] to combine multiple middlewares into a single wrapper, and
-// [Apply] to apply the chain to a concrete job function:
-//
-//	chain := middleware.Chain(
-//		middleware.RecoverMiddleware,
-//		middleware.LogMiddleware(logger),
-//		middleware.NewMetricsMiddleware(store),
-//		middleware.RetryMiddleware(opts, backoff),
-//		middleware.DedupeMiddleware(lock),
-//	)
-//	runnable := middleware.Apply(chain, myJob)
-//
-// # Deduplication
-//
-// [DedupeMiddleware] uses a file-based lock (see internal/lock) to ensure that
-// only one instance of a job runs at a time. If the lock cannot be acquired the
-// job is skipped and [ErrJobAlreadyRunning] is returned. The lock is always
-// released when the wrapped job returns, even on error or panic (when combined
-// with [RecoverMiddleware]).
+// Middlewares are intended to be composed with Chain so the execution order
+// is explicit and predictable.
 package middleware
