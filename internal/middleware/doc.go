@@ -1,30 +1,32 @@
-// Package middleware provides composable job execution middleware for cronwrap.
+// Package middleware provides composable middleware for cronwrap job execution.
 //
-// Each middleware wraps a job function (func(ctx context.Context) error) and
-// adds cross-cutting behaviour such as logging, metrics recording, panic
-// recovery, retry logic, notification dispatch, audit logging, and concurrency
-// control.
+// Middleware wraps a job function of the form:
 //
-// Middlewares are combined using Chain and Apply:
+//	func(ctx context.Context) error
+//
+// and adds cross-cutting behaviour such as logging, metrics, retry, timeout,
+// panic recovery, notifications, audit logging, concurrency limiting, and
+// deduplication.
+//
+// # Composition
+//
+// Use [Chain] to combine multiple middlewares into a single wrapper, and
+// [Apply] to apply the chain to a concrete job function:
 //
 //	chain := middleware.Chain(
 //		middleware.RecoverMiddleware,
-//		middleware.LogMiddleware(log),
-//		middleware.NewMetricsMiddleware(store).Wrap,
-//		middleware.NewConcurrencyMiddleware(4, false).Wrap,
-//		middleware.RetryMiddleware(opts),
+//		middleware.LogMiddleware(logger),
+//		middleware.NewMetricsMiddleware(store),
+//		middleware.RetryMiddleware(opts, backoff),
+//		middleware.DedupeMiddleware(lock),
 //	)
-//	if err := middleware.Apply(ctx, chain, jobFn); err != nil {
-//		// handle
-//	}
+//	runnable := middleware.Apply(chain, myJob)
 //
-// Available middleware:
+// # Deduplication
 //
-//   - Chain / Apply        — compose and execute a slice of middlewares
-//   - RecoverMiddleware    — convert panics into errors
-//   - LogMiddleware        — structured start/finish logging
-//   - NewMetricsMiddleware — record success/failure counters and duration
-//   - NewNotifyMiddleware  — dispatch notifications on job completion
-//   - RetryMiddleware      — configurable retry with backoff
-//   - NewConcurrencyMiddleware — cap simultaneous executions
+// [DedupeMiddleware] uses a file-based lock (see internal/lock) to ensure that
+// only one instance of a job runs at a time. If the lock cannot be acquired the
+// job is skipped and [ErrJobAlreadyRunning] is returned. The lock is always
+// released when the wrapped job returns, even on error or panic (when combined
+// with [RecoverMiddleware]).
 package middleware

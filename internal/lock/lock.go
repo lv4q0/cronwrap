@@ -1,97 +1,80 @@
-// Package lock provides file-based locking to prevent concurrent cron job execution.
 package lock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
+	"syscall"
 )
 
-// Lock represents a file-based process lock.
+// Lock is a file-based advisory lock. It stores the owning process PID inside
+// the lock file so that stale locks left by crashed processes can be detected
+// and reclaimed.
 type Lock struct {
 	path string
 }
 
-// New creates a new Lock for the given job name, stored in dir.
-func New(dir, jobName string) *Lock {
-	fileName := fmt.Sprintf("cronwrap-%s.lock", sanitize(jobName))
-	return &Lock{path: filepath.Join(dir, fileName)}
+// New returns a Lock that uses path as the lock file.
+func New(path string) *Lock {
+	return &Lock{path: path}
 }
 
-// Acquire attempts to acquire the lock. Returns an error if already locked.
-func (l *Lock) Acquire() error {
-	if _, err := os.Stat(l.path); err == nil {
-		data, readErr := os.ReadFile(l.path)
-		if readErr == nil {
-			parts := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
-			if len(parts) >= 1 {
-				if pid, err := strconv.Atoi(parts[0]); err == nil {
-					if isRunning(pid) {
-						return fmt.Errorf("job already running with pid %d (lock: %s)", pid, l.path)
-					}
-				}
-			}
+// TryAcquire attempts to acquire the lock without blocking. It returns true if
+// the lock was acquired, false if another live process holds it, and an error
+// if the underlying file operations fail.
+func (l *Lock) TryAcquire() (bool, error) {
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+		return false, fmt.Errorf("lock: create dir: %w", err)
+	}
+
+	// Check for an existing lock file.
+	if data, err := os.ReadFile(l.path); err == nil {
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+		if parseErr == nil && isAlive(pid) {
+			return false, nil
 		}
-		// Stale lock — remove it
+		// Stale lock — remove it and proceed.
 		_ = os.Remove(l.path)
 	}
 
-	content := fmt.Sprintf("%d\n%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
-	if err := os.WriteFile(l.path, []byte(content), 0600); err != nil {
-		return fmt.Errorf("failed to write lock file: %w", err)
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("lock: open: %w", err)
 	}
-	return nil
+	defer f.Close()
+
+	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
+		_ = os.Remove(l.path)
+		return false, fmt.Errorf("lock: write pid: %w", err)
+	}
+	return true, nil
 }
 
-// Release removes the lock file.
+// Release removes the lock file. It is a no-op if the file does not exist.
 func (l *Lock) Release() error {
-	if err := os.Remove(l.path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove lock file: %w", err)
+	if err := os.Remove(l.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("lock: release: %w", err)
 	}
 	return nil
 }
 
-// Path returns the lock file path.
-func (l *Lock) Path() string {
-	return l.path
-}
+// Path returns the path of the lock file.
+func (l *Lock) Path() string { return l.path }
 
-// Info returns the pid and acquisition time recorded in the lock file.
-// Returns an error if the lock file does not exist or cannot be parsed.
-func (l *Lock) Info() (pid int, acquiredAt time.Time, err error) {
-	data, err := os.ReadFile(l.path)
-	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("failed to read lock file: %w", err)
-	}
-	parts := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
-	if len(parts) < 2 {
-		return 0, time.Time{}, fmt.Errorf("lock file has unexpected format")
-	}
-	pid, err = strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("invalid pid in lock file: %w", err)
-	}
-	acquiredAt, err = time.Parse(time.RFC3339, parts[1])
-	if err != nil {
-		return 0, time.Time{}, fmt.Errorf("invalid timestamp in lock file: %w", err)
-	}
-	return pid, acquiredAt, nil
-}
-
-func sanitize(name string) string {
-	replacer := strings.NewReplacer("/", "_", " ", "_", ":", "_")
-	return replacer.Replace(name)
-}
-
-func isRunning(pid int) bool {
+// isAlive returns true if the process with the given PID is running.
+func isAlive(pid int) bool {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	// On Unix, Signal(0) checks existence without sending a signal.
-	err = proc.Signal(os.Signal(nil))
-	return err == nil
+	// On Unix, signal 0 tests whether the process exists without sending a
+	// real signal. On Windows FindProcess always succeeds, so this may
+	// return true for dead processes — acceptable for our use-case.
+	return proc.Signal(syscall.Signal(0)) == nil
 }
