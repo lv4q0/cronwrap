@@ -1,21 +1,27 @@
-// Package ratelimit provides a lightweight token-bucket-style rate limiter
-// for cronwrap job executions.
+// Package ratelimit provides rate-limiting primitives for cronwrap jobs.
 //
-// The Limiter type enforces a configurable minimum interval between successive
-// runs of any named job, preventing runaway retries or overlapping executions
-// when a cron schedule fires more frequently than intended.
+// # Overview
 //
-// The Guard type wraps a Limiter with structured logging and integrates
-// cleanly with the runner pipeline: call Guard.Check before executing a job
-// and it will either permit the run or return a descriptive error and emit a
-// warning log entry.
+// The package exposes two main building blocks:
 //
-// Typical usage:
+//   - [Store] — a thread-safe, in-memory store that tracks the last run time
+//     for each job key and answers "is this key allowed to run now?" queries.
 //
-//	guard := ratelimit.NewGuard(5*time.Minute, log)
-//	if err := guard.Check(jobName); err != nil {
-//		// skip this execution
-//		return
+//   - [Guard] — a higher-level helper that wraps a Store and exposes a single
+//     Allow(key) method suitable for use inside middleware chains.
+//
+// # Usage
+//
+// Typical usage via the middleware layer:
+//
+//	store := ratelimit.New()
+//	guard := ratelimit.NewGuard("my-job", 5*time.Minute, store, logger)
+//
+//	// inside a middleware chain:
+//	if err := guard.Allow(ctx); err != nil {
+//		// job was skipped
 //	}
-//	// proceed with job
+//
+// For finer control (e.g. obtaining the next-allowed time for a skip
+// callback), use Store.Check and Store.Record directly.
 package ratelimit
